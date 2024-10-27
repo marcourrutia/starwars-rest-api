@@ -1,51 +1,98 @@
-"""
-This module takes care of starting the API Server, Loading the DB and Adding the endpoints
-"""
-import os
-from flask import Flask, request, jsonify, url_for
+from flask import Flask, jsonify, request
+from flask_sqlalchemy import SQLAlchemy
+from models import db, User, Character, Planet, Favorite
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 from flask_migrate import Migrate
-from flask_swagger import swagger
-from flask_cors import CORS
-from utils import APIException, generate_sitemap
-from admin import setup_admin
-from models import db, User
-#from models import Person
 
 app = Flask(__name__)
-app.url_map.strict_slashes = False
 
-db_url = os.getenv("DATABASE_URL")
-if db_url is not None:
-    app.config['SQLALCHEMY_DATABASE_URI'] = db_url.replace("postgres://", "postgresql://")
-else:
-    app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:////tmp/test.db"
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///startwars-rest.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-MIGRATE = Migrate(app, db)
 db.init_app(app)
-CORS(app)
-setup_admin(app)
+Migrate(app, db)
 
-# Handle/serialize errors like a JSON object
-@app.errorhandler(APIException)
-def handle_invalid_usage(error):
-    return jsonify(error.to_dict()), error.status_code
+engine = create_engine(app.config['SQLALCHEMY_DATABASE_URI'])
+db.metadata.create_all(engine)
+Session = sessionmaker(bind=engine)
+session = Session()
 
-# generate sitemap with all your endpoints
-@app.route('/')
-def sitemap():
-    return generate_sitemap(app)
+@app.route('/character', methods=['GET'])
+def get_characters():
+    characters = session.query(Character).all()
+    return jsonify([char.serialize() for char in characters]), 200
 
-@app.route('/user', methods=['GET'])
-def handle_hello():
+@app.route('/character/<int:character_id>', methods=['GET'])
+def get_character(character_id):
+    character = session.query(Character).get(character_id)
+    if character:
+        return jsonify(character.serialize()), 200
+    return jsonify({"error": "Character not found"}), 404
 
-    response_body = {
-        "msg": "Hello, this is your GET /user response "
-    }
+@app.route('/planets', methods=['GET'])
+def get_planets():
+    planets = session.query(Planet).all()
+    return jsonify([planet.serialize() for planet in planets]), 200
 
-    return jsonify(response_body), 200
+@app.route('/planets/<int:planet_id>', methods=['GET'])
+def get_planet(planet_id):
+    planet = session.query(Planet).get(planet_id)
+    if planet:
+        return jsonify(planet.serialize()), 200
+    return jsonify({"error": "Planet not found"}), 404
 
-# this only runs if `$ python src/app.py` is executed
+@app.route('/users', methods=['GET'])
+def get_users():
+    users = session.query(User).all()
+    return jsonify([user.serialize() for user in users]), 200
+
+@app.route('/users/<int:user_id>/favorites', methods=['GET'])
+def get_user_favorites(user_id):
+    user = session.query(User).get(user_id)
+    if user:
+        return jsonify([fav.serialize() for fav in user.favorites]), 200
+    return jsonify({"error": "User not found"}), 404
+
+@app.route('/favorite/planet/<int:user_id>/<int:planet_id>', methods=['POST'])
+def add_favorite_planet(user_id, planet_id):
+    favorite = Favorite(user_id=user_id, planet_id=planet_id)
+    try:
+        session.add(favorite)
+        session.commit()
+        return jsonify({"message": "Planet added to favorites"}), 201
+    except IntegrityError:
+        session.rollback()
+        return jsonify({"error": "Planet is already in favorites"}), 400
+
+@app.route('/favorite/character/<int:user_id>/<int:character_id>', methods=['POST'])
+def add_favorite_character(user_id, character_id):
+    favorite = Favorite(user_id=user_id, character_id=character_id)
+    try:
+        session.add(favorite)
+        session.commit()
+        return jsonify({"message": "Character added to favorites"}), 201
+    except IntegrityError:
+        session.rollback()
+        return jsonify({"error": "Character is already in favorites"}), 400
+
+@app.route('/favorite/planet/<int:user_id>/<int:planet_id>', methods=['DELETE'])
+def delete_favorite_planet(user_id, planet_id):
+    favorite = session.query(Favorite).filter_by(user_id=user_id, planet_id=planet_id).first()
+    if favorite:
+        session.delete(favorite)
+        session.commit()
+        return jsonify({"message": "Favorite planet removed"}), 200
+    return jsonify({"error": "Favorite planet not found"}), 404
+
+@app.route('/favorite/character/<int:user_id>/<int:character_id>', methods=['DELETE'])
+def delete_favorite_character(user_id, character_id):
+    favorite = session.query(Favorite).filter_by(user_id=user_id, character_id=character_id).first()
+    if favorite:
+        session.delete(favorite)
+        session.commit()
+        return jsonify({"message": "Favorite character removed"}), 200
+    return jsonify({"error": "Favorite character not found"}), 404
+
 if __name__ == '__main__':
-    PORT = int(os.environ.get('PORT', 3000))
-    app.run(host='0.0.0.0', port=PORT, debug=False)
+    app.run(debug=True)
